@@ -44,7 +44,7 @@ namespace Google.Play.AssetDelivery.Internal
 
         /// <summary>
         /// Registers a listener that will be called when a pack download changes state.
-        /// Listeners should be subsequently cleared using <see cref="ClearListeners"/>
+        /// Listeners should be subsequently unregistered using <see cref="UnregisterListener"/>
         /// </summary>
         /// <param name="listener">
         /// An AndroidJavaProxy representing a java object of class:
@@ -56,11 +56,15 @@ namespace Google.Play.AssetDelivery.Internal
         }
 
         /// <summary>
-        /// Calls Play Core to clear all listeners previously added using <see cref="RegisterListener"/>
+        /// Calls Play Core to unregister a listener previously added using <see cref="RegisterListener"/>
         /// </summary>
-        public void ClearListeners()
+        /// <param name="listener">
+        /// An AndroidJavaProxy representing a java object of class:
+        /// com.google.android.play.core.assetpacks.AssetPackStateUpdateListener
+        /// </param>
+        public void UnregisterListener(AndroidJavaProxy listener)
         {
-            _javaAssetPackManager.Call("clearListeners");
+            _javaAssetPackManager.Call("unregisterListener", listener);
         }
 
         /// <summary>
@@ -119,7 +123,6 @@ namespace Google.Play.AssetDelivery.Internal
         /// </returns>
         public AssetLocation GetAssetLocation(string assetPackName, string assetPath)
         {
-            Debug.LogFormat("Calling get asset location, assetPackName: {0}, path: {1}", assetPackName, assetPath);
             var javaAssetLocation =
                 _javaAssetPackManager.Call<AndroidJavaObject>("getAssetLocation", assetPackName, assetPath);
             return PlayCoreHelper.IsNull(javaAssetLocation) ? null : new AssetLocationImpl(javaAssetLocation);
