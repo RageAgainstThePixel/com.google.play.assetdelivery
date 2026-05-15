@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System;
+using System.Collections.Generic;
 using Google.Play.AssetDelivery.Internal;
 using Google.Play.Common;
 
@@ -40,7 +42,8 @@ namespace Google.Play.AssetDelivery
         }
 
         /// <summary>
-        /// Starts a <see cref="PlayAssetBundleRequest"/> to retrieve an asset pack containing an AssetBundle.
+        /// Starts a <see cref="PlayAssetBundleRequest"/> to retrieve an asset pack containing only the specified
+        /// AssetBundle. Both the AssetBundle and asset pack must share the same name.
         /// Downloads the asset pack if the latest version isn't already available on disk.
         /// After download, the contained AssetBundle is loaded into memory.
         /// </summary>
@@ -50,6 +53,34 @@ namespace Google.Play.AssetDelivery
         {
             return Instance.RetrieveAssetBundleAsyncInternal(assetBundleName);
         }
+
+// The below methods are experimental and are subject to change. If you would like to try them out, enable the
+// below preprocessor definition in Player Settings.
+// See here: https://docs.unity3d.com/Manual/PlatformDependentCompilation.html
+#if PLAY_ASSET_DELIVERY_EXPERIMENTAL
+        /// <summary>
+        /// Starts a <see cref="PlayAssetPackRequest"/> to retrieve the specified asset pack.
+        /// Downloads the asset pack if the latest version isn't already available on disk.
+        /// </summary>
+        /// <param name="assetPackName">The name of the requested asset pack.</param>
+        /// <returns>A request object used to monitor the asynchronous asset pack retrieval.</returns>
+        public static PlayAssetPackRequest RetrieveAssetPackAsync(string assetPackName)
+        {
+            return Instance.RetrieveAssetPackAsyncInternal(assetPackName);
+        }
+
+        /// <summary>
+        /// Starts a <see cref="PlayAssetPackBatchRequest"/> to retrieve the specified asset packs.
+        /// Downloads the asset packs if the latest versions aren't already available on disk.
+        /// </summary>
+        /// <param name="assetPackNames">A list of requested asset packs.</param>
+        /// <returns>A request object used to monitor the asynchronous asset pack batch retrieval.</returns>
+        /// <exception cref="ArgumentException">Throws if assetPackNames contains duplicate entries.</exception>
+        public static PlayAssetPackBatchRequest RetrieveAssetPackBatchAsync(IList<string> assetPackNames)
+        {
+            return Instance.RetrieveAssetPackBatchAsyncInternal(assetPackNames);
+        }
+#endif
 
         /// <summary>
         /// Starts a PlayAsyncOperation to determine the download size in bytes of the specified asset pack.

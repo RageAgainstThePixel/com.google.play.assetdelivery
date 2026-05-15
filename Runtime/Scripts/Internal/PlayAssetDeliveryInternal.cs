@@ -13,9 +13,9 @@
 // limitations under the License.
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Google.Play.Common;
 using Google.Play.Core.Internal;
 using UnityEngine;
@@ -37,11 +37,7 @@ namespace Google.Play.AssetDelivery.Internal
         private readonly AssetPackStateUpdateListener _stateUpdateListener;
         private readonly AssetDeliveryUpdateHandler _updateHandler;
 
-        private readonly PlayAssetBundleRequestRepository _requestRepository = new PlayAssetBundleRequestRepository();
-
-        // A dictionary from AssetBundle name to AssetBundle loading coroutines that keeps track of AssetBundles that
-        // are currently being loaded.
-        private readonly IDictionary<string, Coroutine> _loadingCoroutinesByName = new Dictionary<string, Coroutine>();
+        private readonly PlayRequestRepository _requestRepository = new PlayRequestRepository();
 
         internal PlayAssetDeliveryInternal()
         {
@@ -53,7 +49,7 @@ namespace Google.Play.AssetDelivery.Internal
 
         internal bool IsDownloaded(string assetBundleName)
         {
-            return GetAssetLocation(assetBundleName) != null;
+            return _assetPackManager.GetPackLocation(assetBundleName) != null;
         }
 
         internal PlayAssetBundleRequest RetrieveAssetBundleAsyncInternal(string assetBundleName)
@@ -65,29 +61,80 @@ namespace Google.Play.AssetDelivery.Internal
             }
 
             var request = CreateAssetBundleRequest(assetBundleName);
+            _requestRepository.AddRequest(request.PackRequest);
+            request.Completed += req => _requestRepository.RemoveRequest(assetBundleName);
 
-            if (IsDownloaded(assetBundleName))
-            {
-                StartLoadingAssetBundle(request);
-                request.OnLoadingStarted();
-            }
-            else
-            {
-                var fetchTask = _assetPackManager.Fetch(assetBundleName);
-                fetchTask.RegisterOnSuccessCallback(javaPackStates =>
-                {
-                    request.OnInitializedInPlayCore();
-                    fetchTask.Dispose();
-                });
-                fetchTask.RegisterOnFailureCallback((reason, errorCode) =>
-                {
-                    Debug.LogErrorFormat("Failed to retrieve AssetBundle {0}: ", reason);
-                    request.OnErrorOccured(PlayCoreTranslator.TranslatePlayCoreErrorCode(errorCode));
-                    fetchTask.Dispose();
-                });
-            }
+            InitiateRequest(request.PackRequest);
 
             return request;
+        }
+
+        internal PlayAssetPackRequest RetrieveAssetPackAsyncInternal(string assetPackName)
+        {
+            if (_requestRepository.ContainsRequest(assetPackName))
+            {
+                throw new ArgumentException(string.Format("There is already an active request for asset pack: {0}",
+                    assetPackName));
+            }
+
+            var request = CreateAssetPackRequest(assetPackName);
+            _requestRepository.AddRequest(request);
+            request.Completed += req => _requestRepository.RemoveRequest(assetPackName);
+
+            InitiateRequest(request);
+
+            return request;
+        }
+
+        internal PlayAssetPackBatchRequest RetrieveAssetPackBatchAsyncInternal(IList<string> assetPackNames)
+        {
+            if (assetPackNames.Count != assetPackNames.Distinct().Count())
+            {
+                throw new ArgumentException("assetPackNames contains duplicate entries");
+            }
+
+            var activePackNames = assetPackNames.Where(name => _requestRepository.ContainsRequest(name)).ToArray();
+            if (activePackNames.Length != 0)
+            {
+                throw new ArgumentException("There are already active requests for asset packs: {0}",
+                    string.Join(", ", activePackNames));
+            }
+
+            // A subset of assetPackNames of packs that are not available on disk.
+            var unavailableAssetPackNames = new List<string>();
+            var requests = new List<PlayAssetPackRequestImpl>();
+            foreach (var assetPackName in assetPackNames)
+            {
+                var request = CreateAssetPackRequest(assetPackName);
+                _requestRepository.AddRequest(request);
+                request.Completed += req => _requestRepository.RemoveRequest(request.AssetPackName);
+                requests.Add(request);
+
+                if (IsDownloaded(assetPackName))
+                {
+                    request.OnPackAvailable();
+                }
+                else
+                {
+                    unavailableAssetPackNames.Add(assetPackName);
+                }
+            }
+
+            var batchRequest = new PlayAssetPackBatchRequestImpl(requests);
+            var fetchTask = _assetPackManager.Fetch(unavailableAssetPackNames.ToArray());
+            fetchTask.RegisterOnSuccessCallback(javaPackStates =>
+            {
+                batchRequest.OnInitializedInPlayCore();
+                fetchTask.Dispose();
+            });
+            fetchTask.RegisterOnFailureCallback((reason, errorCode) =>
+            {
+                Debug.LogErrorFormat("Failed to retrieve asset pack batch: {0}", reason);
+                batchRequest.OnInitializationErrorOccurred(PlayCoreTranslator.TranslatePlayCoreErrorCode(errorCode));
+                fetchTask.Dispose();
+            });
+
+            return batchRequest;
         }
 
         internal PlayAsyncOperation<ConfirmationDialogResult, AssetDeliveryErrorCode>
@@ -163,17 +210,43 @@ namespace Google.Play.AssetDelivery.Internal
             return _assetPackManager.GetAssetLocation(assetBundleName, assetPath);
         }
 
+        private PlayAssetPackRequestImpl CreateAssetPackRequest(string assetPackName)
+        {
+            return new PlayAssetPackRequestImpl(assetPackName, _assetPackManager, _requestRepository);
+        }
+
         private PlayAssetBundleRequestImpl CreateAssetBundleRequest(string assetBundleName)
         {
-            var request = new PlayAssetBundleRequestImpl(assetBundleName, _assetPackManager, _requestRepository);
-            _requestRepository.AddRequest(request);
-            request.Completed += (req) => _requestRepository.RemoveRequest(assetBundleName);
-            return request;
+            var packRequest = CreateAssetPackRequest(assetBundleName);
+            return new PlayAssetBundleRequestImpl(packRequest, _updateHandler);
+        }
+
+        private void InitiateRequest(PlayAssetPackRequestImpl request)
+        {
+            if (IsDownloaded(request.AssetPackName))
+            {
+                request.OnPackAvailable();
+            }
+            else
+            {
+                var fetchTask = _assetPackManager.Fetch(request.AssetPackName);
+                fetchTask.RegisterOnSuccessCallback(javaPackStates =>
+                {
+                    request.OnInitializedInPlayCore();
+                    fetchTask.Dispose();
+                });
+                fetchTask.RegisterOnFailureCallback((reason, errorCode) =>
+                {
+                    Debug.LogErrorFormat("Failed to retrieve asset pack: {0}", reason);
+                    request.OnErrorOccured(PlayCoreTranslator.TranslatePlayCoreErrorCode(errorCode));
+                    fetchTask.Dispose();
+                });
+            }
         }
 
         private void ProcessPackStateUpdate(AssetPackState newState)
         {
-            PlayAssetBundleRequestImpl request;
+            PlayAssetPackRequestImpl request;
             if (!_requestRepository.TryGetRequest(newState.Name, out request))
             {
                 Debug.LogWarningFormat(
@@ -185,10 +258,7 @@ namespace Google.Play.AssetDelivery.Internal
             UpdateRequest(request, newState, newState.ErrorCode);
         }
 
-        private void UpdateRequest(
-            PlayAssetBundleRequestImpl request,
-            AssetPackState newState,
-            int errorCode)
+        private void UpdateRequest(PlayAssetPackRequestImpl request, AssetPackState newState, int errorCode)
         {
             if (request.IsDone)
             {
@@ -209,86 +279,9 @@ namespace Google.Play.AssetDelivery.Internal
                 return;
             }
 
-            if (newState.Status == PlayCoreTranslator.AssetPackStatus.Completed)
-            {
-                var isRequestLoadingAssetBundle = _loadingCoroutinesByName.ContainsKey(request.MainAssetBundleName);
-                if (!isRequestLoadingAssetBundle)
-                {
-                    var startedSuccessfully = StartLoadingAssetBundle(request);
-                    if (!startedSuccessfully)
-                    {
-                        request.OnErrorOccured(AssetDeliveryErrorCode.AssetBundleLoadingError);
-                        return;
-                    }
-                }
-
-                request.OnLoadingStarted();
-                return;
-            }
-
             request.UpdateState(PlayCoreTranslator.TranslatePlayCorePackStatus(newState.Status),
                 newState.BytesDownloaded,
                 newState.TotalBytesToDownload);
-        }
-
-        private bool StartLoadingAssetBundle(PlayAssetBundleRequestImpl request)
-        {
-            var assetLocation = GetAssetLocation(request.MainAssetBundleName);
-            if (assetLocation == null)
-            {
-                return false;
-            }
-
-            var loadingCo =
-                _updateHandler.StartCoroutine(CoLoadAssetBundle(
-                    request.MainAssetBundleName,
-                    assetLocation.Path,
-                    assetLocation.Offset));
-
-            _loadingCoroutinesByName.Add(request.MainAssetBundleName, loadingCo);
-            return true;
-        }
-
-        private IEnumerator CoLoadAssetBundle(string assetBundleName, string assetBundlePath, uint offset)
-        {
-            try
-            {
-                var bundleCreateRequest = AssetBundle.LoadFromFileAsync(assetBundlePath, /* crc= */ 0, offset);
-                yield return bundleCreateRequest;
-                NotifyRequestLoadingComplete(assetBundleName, bundleCreateRequest.assetBundle);
-            }
-            finally
-            {
-                _loadingCoroutinesByName.Remove(assetBundleName);
-            }
-        }
-
-        private void NotifyRequestLoadingComplete(string assetBundleName, AssetBundle loadedBundle)
-        {
-            PlayAssetBundleRequestImpl request;
-            if (!_requestRepository.TryGetRequest(assetBundleName, out request))
-            {
-                if (loadedBundle == null)
-                {
-                    Debug.LogError("AssetBundle failed to load, and the associated " +
-                                   "PlayAssetBundleRequest could not be found.");
-                }
-                else
-                {
-                    Debug.LogErrorFormat("AssetBundle \"{0}\" finished loading, but the associated " +
-                                         "PlayAssetBundleRequest could not be found.", loadedBundle.name);
-                }
-
-                return;
-            }
-
-            if (loadedBundle == null)
-            {
-                request.OnErrorOccured(AssetDeliveryErrorCode.AssetBundleLoadingError);
-                return;
-            }
-
-            request.OnLoadingFinished(loadedBundle);
         }
 
         private bool IsInstallTimeAssetBundle(string assetBundleName)
